@@ -31,6 +31,10 @@ for i, poem in enumerate(poem_collection['Content']):
 
 print("Length of the text: ", len(all_text))
 
+fileout = open("poems.txt", "w")
+fileout.write(all_text)
+fileout.close()
+
 # Extract all the unique characters that are in the text
 uniq_chars = sorted(list(set(all_text)))
 print(''.join(uniq_chars))
@@ -93,7 +97,7 @@ The function `get_batch` will be used to either extract 4 blocks of size 8 and p
 """
 
 BATCH_SIZE = 4
-
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 torch.manual_seed(1337)
 
 # get_batch will extract from either training or testing depending 
@@ -108,7 +112,8 @@ def get_batch(split_type):
   # Assemble the stacks: context (cx), target (tg)
   cx = torch.stack([data[i:i+BLOCK_SIZE] for i in ix])
   tg = torch.stack([data[i+1:i+BLOCK_SIZE+1] for i in ix])
-  return cx, tg
+  x, y = cx.to(DEVICE), tg.to(DEVICE)
+  return x,y
 
 # Sampling the 
 xd, yd = get_batch('train')
@@ -126,27 +131,51 @@ for batch in range(BATCH_SIZE):
         print(f'when the input is {context.tolist()} the expected out is {target.tolist()}')
     print()
 
+EVAL_ITERS = 200
+
+@torch.no_grad()
+def estimate_loss():
+    out = {}
+    model.eval()
+    for split in ['train', 'val']:
+        losses = torch.zeros(EVAL_ITERS)
+        for k in range(EVAL_ITERS):
+            X, Y = get_batch(split)
+            logits, loss = model(X, Y)
+            losses[k] = loss.item()
+        out[split] = losses.mean()
+    model.train()
+    return out
+
 """## Bigram Language Model
 
 The simplest language model you can find. It literally just does word prediction based on the last word. Read more about n-gram models [here](https://towardsdatascience.com/introduction-to-language-models-n-gram-e323081503d9)
 """
 
+N_EMBED = 32
 class BigramLanguageModel(nn.Module):
 
-  def __init__(self, vocab_size):
+  def __init__(self):
       super().__init__()
       # each token reads of the logits for the next token in the lookup table
-      self.token_embedding_table = nn.Embedding(vocab_size, vocab_size)
+      self.token_embedding_table = nn.Embedding(VOCAB_SIZE, N_EMBED)
+      self.pos_embedding_table = nn.Embedding(BLOCK_SIZE, N_EMBED)
+      self.lm_head = nn.Linear(N_EMBED, VOCAB_SIZE)
 
   def forward(self, idx, targets=None):
+    B, T = idx.shape
+
     # idx is the contexts that will be passed into the embedding table 
     # which retunrns a (Batch, Time, Channel) logit sequence
-    logits = self.token_embedding_table(idx) # (B, T, C)
+    token_embs = self.token_embedding_table(idx) # (B, T, C)
+    pos_embs = self.pos_embedding_table(torch.arange(T, device=DEVICE))
+    x = token_embs + pos_embs
+    logits = self.lm_head(x) # (B, T, VOCAB_SIZE)
 
     if targets is None:
       loss = None
     else:
-      B, T, C = logits.shape
+      B,T,C = logits.shape
       logits = logits.view(B*T, C)
       targets = targets.view(B*T)
       # We need to model the loss function as the difference (cross_entropy)
@@ -154,24 +183,32 @@ class BigramLanguageModel(nn.Module):
       loss = F.cross_entropy(logits, targets)
     return logits, loss
 
+      
   def generate(self, idx, max_new_tokens):
+    # idx is (B, T) array of indices in the current context
     for _ in range(max_new_tokens):
-      logits, loss = self(idx)
-      logits = logits[:, -1, :]
-      probs = F.softmax(logits, dim=-1)
-      idx_next = torch.multinomial(probs, num_samples=1)
-      idx = torch.cat((idx, idx_next), dim=1)
+        # get the predictions
+        logits, loss = self(idx)
+        # focus only on the last time step
+        logits = logits[:, -1, :] # becomes (B, C)
+        # apply softmax to get probabilities
+        probs = F.softmax(logits, dim=-1) # (B, C)
+        # sample from the distribution
+        idx_next = torch.multinomial(probs, num_samples=1) # (B, 1)
+        # append sampled index to the running sequence
+        idx = torch.cat((idx, idx_next), dim=1) # (B, T+1)
     return idx
 
-m = BigramLanguageModel(VOCAB_SIZE)
-
+model = BigramLanguageModel()
+m = model.to(DEVICE)
 logits, loss = m(xd, yd)
 print(logits.shape)
 print(loss)
 
 """Now that we have a generation function, we can try generating some data. Of course it will be random data because we haven't trained our model but it will be useful. """
 
-idx = torch.zeros((1,1), dtype = torch.long)
+idx = torch.zeros((BLOCK_SIZE,BATCH_SIZE), dtype = torch.long)
+print(idx)
 sequence_gen = m.generate(idx, max_new_tokens=100)[0].tolist()
 print(decode(sequence_gen))
 
@@ -185,20 +222,87 @@ optimizer = torch.optim.AdamW(m.parameters(), lr=1e-3)
 
 """Now in batches we can train the model to reduce the loss. """
 
-batch_size = 32
-for steps in range(1000):
-    # get the training data
+MAX_ITERS = 3000
+EVAL_INTERVAL = 300
+for iter in range(MAX_ITERS):
+
+    # every once in a while evaluate the loss on train and val sets
+    if iter % EVAL_INTERVAL == 0:
+        losses = estimate_loss()
+        print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+
+    # sample a batch of data
     xb, yb = get_batch('train')
 
-    # evaluate the loss function
-    logits, loss = m(xb, yb)
+    # evaluate the loss
+    logits, loss = model(xb, yb)
     optimizer.zero_grad(set_to_none=True)
     loss.backward()
     optimizer.step()
-    print(loss.item())
+
+# generate from the model
+context = torch.zeros((1, 1), dtype=torch.long, device=DEVICE)
+print(decode(m.generate(context, max_new_tokens=500)[0].tolist()))
 
 """Now lets try outputing again"""
 
 idx = torch.zeros((1,1), dtype = torch.long)
 sequence_gen = m.generate(idx, max_new_tokens=100)[0].tolist()
 print(decode(sequence_gen))
+
+"""## Self-Attention and Transformer Networks
+
+Now we want the batches to talk to each other. So if I am at batch i, i want to gain context and loss information of the predications of **all the previous batches** because I am trying to improve the predictions for this one.
+
+I **cannot look at all the predictions in the future batches** because I want to predict the future. 
+"""
+
+torch.manual_seed(1337)
+B,T,C = 4,8,2 # batch = 4, time = 8 and channel = 2
+x = torch.randn(B,T,C)
+x.shape
+print(x)
+
+"""Now lets calculate the mean logits and use its values for each subsequent time column."""
+
+weights = torch.tril(torch.ones(T,T))
+print(weights)
+weights = weights / weights.sum(1, keepdim=True)
+print(weights)
+
+# This is valid matrix multiplication becasue PyTorch will automatically convert
+# the weights (T x T) matrix to a (B x T x T) so it can multiply with a 
+# (B x T x C) matrix 
+xbow_2 = weights @ x
+print(xbow_2[0])
+
+tril = torch.tril(torch.ones(T,T))
+weights = torch.zeros(T, T)
+
+# This essentially says that token in the future cannot communicate with a token
+# in the past. We can't have a future token interacting with the past for the 
+# reasons mentioned before. 
+weights = weights.masked_fill(tril==0, float('-inf'))
+weights = F.softmax(weights, dim=-1)
+
+print(weights)
+xbow3 = weights @ x
+print(xbow3)
+
+"""## Self-Attention 
+
+"""
+
+# version 4: self-attention!
+torch.manual_seed(1337)
+B,T,C = 4,8,32 # batch, time, channels
+x = torch.randn(B,T,C)
+
+# A single Head performs self-attention
+head_size = 16
+key = nn.Linear(C, head_size, bias=False)
+query = nn.Linear(C, head_size, bias=False)
+value = nn.Linear(C, head_size, bias=False)
+k = key(x)   # (B, T, 16)
+q = query(x) # (B, T, 16)
+wei =  q @ k.transpose(-2, -1) # (B, T, 16) @ (B, 16, T) ---> (B, T, T)
