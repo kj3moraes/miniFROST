@@ -10,10 +10,13 @@ Original file is located at
 
 I am hoping to build a mini GPT model alogn the lines of Karpathy's nanoGPT tutorial [here](https://www.youtube.com/watch?v=kCc8FmEb1nY). Instead of Shakespeare I will attempt to do Robert Frost's poems because they are more evocative to me.
 """
+
+from google.colab import files
 import pandas as pd
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+!pip install tiktoken
 import tiktoken
 import math
 
@@ -169,6 +172,7 @@ class BigramLanguageModel(nn.Module):
     # which retunrns a (Batch, Time, Channel) logit sequence
     token_embs = self.token_embedding_table(idx) # (B, T, C)
     pos_embs = self.pos_embedding_table(torch.arange(T, device=DEVICE))
+    
     x = token_embs + pos_embs
     logits = self.lm_head(x) # (B, T, VOCAB_SIZE)
 
@@ -198,6 +202,8 @@ class BigramLanguageModel(nn.Module):
         # append sampled index to the running sequence
         idx = torch.cat((idx, idx_next), dim=1) # (B, T+1)
     return idx
+
+
 
 model = BigramLanguageModel()
 m = model.to(DEVICE)
@@ -291,6 +297,7 @@ print(xbow3)
 
 """## Self-Attention 
 
+The value v stores "here's what I will communicate to you if there is a key that satsifies my query" for a single head. 
 """
 
 # version 4: self-attention!
@@ -305,4 +312,47 @@ query = nn.Linear(C, head_size, bias=False)
 value = nn.Linear(C, head_size, bias=False)
 k = key(x)   # (B, T, 16)
 q = query(x) # (B, T, 16)
-wei =  q @ k.transpose(-2, -1) # (B, T, 16) @ (B, 16, T) ---> (B, T, T)
+weights =  q @ k.transpose(-2, -1) # (B, T, 16) @ (B, 16, T) ---> (B, T, T)
+
+tril = torch.tril(torch.ones(T,T))
+weights = weights.masked_fill(tril==0, float('-inf'))
+weights = F.softmax(weights, dim=-1)
+
+v = value(x)
+out = weights @ v
+
+print(out.shape)
+tril
+
+weights[0]
+
+"""Look at the 0.2391 in the last row of the above matrix. It is the 8th token. It knows its position via the position embedding table and the its value. Then it makes a query - like im looking for <> characters. 
+Every node gets to emit a key and the query and key that dot product the highest indicate that they match well. 
+"""
+
+class Head(nn.Module):
+  
+  def __init__(self, head_size):
+    super().__init__()
+    self.query = nn.Linear(N_EMBED, head_size, bias=False)
+    self.key = nn.Linear(N_EMBED, head_size, bias=False)
+    self.value = nn.Linear(N_EMBED, head_size, bias=False)
+    self.register_buffer('tril', torch.tril(torch.ones(BLOCK_SIZE, BLOCK_SIZE)))
+
+  def forward(self, x):
+   B,T,C = x.shape
+   k = self.key(x)
+   q = self.query(x)
+   v = self.value(x)
+   # compute attention scores ("affinities")
+
+   # this is in accordance with what is done in the original transformers paper
+   # the diision by the square root serves to amplify the maximum.
+   wei = q @ k.transpose(-2,-1) * C**-0.5 # (B, T, C) @ (B, C, T) -> (B, T, T)
+   wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf')) # (B, T, T)
+   wei = F.softmax(wei, dim=-1) # (B, T, T)
+   wei = self.dropout(wei)
+
+   out = wei @ v
+   return out
+
