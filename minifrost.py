@@ -63,7 +63,7 @@ print(data[:500])
 
 """### Training and Testing Split
 
-At this point, we will have to decide on the training-testing split for the model. The tutorial says a 90-10 split should be a good enough one.
+At this point, we will have to decide on the training-testing split for the model. The tutorial says a 90-10 split should be a good enough one. 
 
 **Remember that we can alter this later on and see how "accurately" it can generate text as per our needs.**
 
@@ -78,36 +78,36 @@ testing_data = data[n:]
 """### Context and Target
 
 Now for a transformer, we need to chunk data in batches and feed it in with a context and the target output that the context "implies".
-This is how the model learns. It sees all the context for that batch and sees all the targets and accordingly learns to predict.
+This is how the model learns. It sees all the context for that batch and sees all the targets and accordingly learns to predict. 
 """
 
 BLOCK_SIZE = 8
 
-# An example here shows the context and target in actions
+# An example here shows the context and target in actions 
 context = training_data[:BLOCK_SIZE]
 target = training_data[1:BLOCK_SIZE + 1]
 for i in range(len(context)):
     print("The context is ", context[:i+1], " and the target is ", target[i])
 
-"""### Getting Batches
+"""### Getting Batches 
 
 Now, what we want is to sample random batches from the text, get their context and their target and then build a stack out of them. Since our batch size is 8, we will have 8 columns.
 We will set the no. of rows in the stack to 4. Pytorch will parallelize this process and *that's what makes transformers so good. The power of efficiency.*
 
 **Extracting Batches**
-The function `get_batch` will be used to either extract 4 blocks of size 8 and put them onto a stack togther. 2 [4x8] stacks will be returned. One being the context and the other being the target.
+The function `get_batch` will be used to either extract 4 blocks of size 8 and put them onto a stack togther. 2 [4x8] stacks will be returned. One being the context and the other being the target. 
 """
 
 BATCH_SIZE = 4
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 torch.manual_seed(1337)
 
-# get_batch will extract from either training or testing depending
+# get_batch will extract from either training or testing depending 
 # on the value of the split_type ('train' or 'test')
 def get_batch(split_type):
   data = training_data if split_type == "train" else testing_data
 
-  # ix essentially says: find $batch_size (4) random offsets and then
+  # ix essentially says: find $batch_size (4) random offsets and then 
   # extract $block_size (8) length list after and including it.
   ix = torch.randint((len(data) - BLOCK_SIZE), (BATCH_SIZE, ))
 
@@ -117,7 +117,7 @@ def get_batch(split_type):
   x, y = cx.to(DEVICE), tg.to(DEVICE)
   return x,y
 
-# Sampling the
+# Sampling the 
 xd, yd = get_batch('train')
 
 print(xd.shape)
@@ -166,7 +166,7 @@ class BigramLanguageModel(nn.Module):
 
         # idx and targets are both (B,T) tensor of integers
         logits = self.token_embedding_table(idx) # (B,T,C)
-
+        
         if targets is None:
             loss = None
         else:
@@ -176,7 +176,7 @@ class BigramLanguageModel(nn.Module):
             loss = F.cross_entropy(logits, targets)
 
         return logits, loss
-
+    
     def generate(self, idx, max_new_tokens):
         # idx is (B, T) array of indices in the current context
         for _ in range(max_new_tokens):
@@ -204,9 +204,9 @@ idx = torch.zeros((BLOCK_SIZE,BATCH_SIZE), dtype = torch.long)
 print(idx)
 print(decode(m.generate(idx = torch.zeros((1, 1), dtype=torch.long), max_new_tokens=500)[0].tolist()))
 
-"""## Optimization
+"""## Optimization 
 
-We can now start training the model and prompting it to minimizing the loss function. We will use the AdamW optimzer from PyTorch. The learning rate ca be set to much higher for
+We can now start training the model and prompting it to minimizing the loss function. We will use the AdamW optimzer from PyTorch. The learning rate ca be set to much higher for 
 """
 
 # create an optimizer
@@ -246,7 +246,7 @@ print(decode(sequence_gen))
 
 Now we want the batches to talk to each other. So if I am at batch i, i want to gain context and loss information of the predications of **all the previous batches** because I am trying to improve the predictions for this one.
 
-I **cannot look at all the predictions in the future batches** because I want to predict the future.
+I **cannot look at all the predictions in the future batches** because I want to predict the future. 
 """
 
 torch.manual_seed(1337)
@@ -263,8 +263,8 @@ weights = weights / weights.sum(1, keepdim=True)
 print(weights)
 
 # This is valid matrix multiplication becasue PyTorch will automatically convert
-# the weights (T x T) matrix to a (B x T x T) so it can multiply with a
-# (B x T x C) matrix
+# the weights (T x T) matrix to a (B x T x T) so it can multiply with a 
+# (B x T x C) matrix 
 xbow_2 = weights @ x
 print(xbow_2[0])
 
@@ -272,8 +272,8 @@ tril = torch.tril(torch.ones(T,T))
 weights = torch.zeros(T, T)
 
 # This essentially says that token in the future cannot communicate with a token
-# in the past. We can't have a future token interacting with the past for the
-# reasons mentioned before.
+# in the past. We can't have a future token interacting with the past for the 
+# reasons mentioned before. 
 weights = weights.masked_fill(tril==0, float('-inf'))
 weights = F.softmax(weights, dim=-1)
 
@@ -281,9 +281,9 @@ print(weights)
 xbow3 = weights @ x
 print(xbow3)
 
-"""## Self-Attention
+"""## Self-Attention 
 
-The value v stores "here's what I will communicate to you if there is a key that satsifies my query" for a single head.
+The value v stores "here's what I will communicate to you if there is a key that satsifies my query" for a single head. 
 """
 
 # version 4: self-attention!
@@ -312,12 +312,12 @@ tril
 
 weights[0]
 
-"""Look at the 0.2391 in the last row of the above matrix. It is the 8th token. It knows its position via the position embedding table and the its value. Then it makes a query - like im looking for <> characters.
-Every node gets to emit a key and the query and key that dot product the highest indicate that they match well.
+"""Look at the 0.2391 in the last row of the above matrix. It is the 8th token. It knows its position via the position embedding table and the its value. Then it makes a query - like im looking for <> characters. 
+Every node gets to emit a key and the query and key that dot product the highest indicate that they match well. 
 """
 
 class Head(nn.Module):
-
+  
   def __init__(self, head_size):
     super().__init__()
     self.query = nn.Linear(N_EMBED, head_size, bias=False)
@@ -347,7 +347,7 @@ class MultiAttentionHead(nn.Module):
     def __init__(self, num_heads, head_size):
         super().__init__()
         self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
-
+    
     def forward(self, x):
         return torch.cat([h(x) for h in self.heads], dim=-1)
 
@@ -365,7 +365,19 @@ class FeedForward(nn.Module):
     def forward(self, x):
         return self.net(x)
 
+class Block(nn.Module):
 
+    def __init__(self, n_embd, n_head):
+        super().__init__()
+        head_size = n_embd // n_head
+        self.sa = MultiAttentionHead(n_head, head_size)
+        self.ffwd = FeedForward(n_embd)
+
+
+    def forward(self, x):
+        x = self.sa(x)
+        x = self.ffwd(x)
+        return x
 '''
 Bigram Model with Self attention head
 '''
@@ -375,8 +387,11 @@ class SABigramLanguageModel(nn.Module):
         super().__init__()
         self.token_embedding_table = nn.Embedding(VOCAB_SIZE, N_EMBED)
         self.position_embedding_table = nn.Embedding(BLOCK_SIZE, N_EMBED)
-        self.sa_heads = MultiAttentionHead(4, N_EMBED//4) # 4 heads of 8-dimensional heads
-        self.ffd = FeedForward(N_EMBED)
+        self.blocks = nn.Sequential(
+            Block(N_EMBED, n_head=4),
+            Block(N_EMBED, n_head=4),
+            Block(N_EMBED, n_head=4),
+        )
         self.lm_head = nn.Linear(N_EMBED, VOCAB_SIZE)
 
     def forward(self, idx, targets=None):
@@ -386,7 +401,7 @@ class SABigramLanguageModel(nn.Module):
         pos_emb = self.position_embedding_table(torch.arange(T, device=DEVICE))
         x = tok_emb + pos_emb
         x = self.sa_heads(x)
-        x = self.ffd(x)
+        x = self.ffd(x) 
         logits = self.lm_head(x)
 
         if targets is None:
@@ -397,7 +412,7 @@ class SABigramLanguageModel(nn.Module):
             targets = targets.view(B * T)
             loss = F.cross_entropy(logits, targets)
 
-        return logits, loss
+        return logits, loss  
 
     def generate(self, idx, max_new_tokens):
         # idx is (B, T) array of indices in the current context
