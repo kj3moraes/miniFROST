@@ -64,7 +64,7 @@ print(data[:500])
 
 """### Training and Testing Split
 
-At this point, we will have to decide on the training-testing split for the model. The tutorial says a 90-10 split should be a good enough one. 
+At this point, we will have to decide on the training-testing split for the model. The tutorial says a 90-10 split should be a good enough one.
 
 **Remember that we can alter this later on and see how "accurately" it can generate text as per our needs.**
 
@@ -79,36 +79,36 @@ testing_data = data[n:]
 """### Context and Target
 
 Now for a transformer, we need to chunk data in batches and feed it in with a context and the target output that the context "implies".
-This is how the model learns. It sees all the context for that batch and sees all the targets and accordingly learns to predict. 
+This is how the model learns. It sees all the context for that batch and sees all the targets and accordingly learns to predict.
 """
 
 BLOCK_SIZE = 8
 
-# An example here shows the context and target in actions 
+# An example here shows the context and target in actions
 context = training_data[:BLOCK_SIZE]
 target = training_data[1:BLOCK_SIZE + 1]
 for i in range(len(context)):
     print("The context is ", context[:i+1], " and the target is ", target[i])
 
-"""### Getting Batches 
+"""### Getting Batches
 
 Now, what we want is to sample random batches from the text, get their context and their target and then build a stack out of them. Since our batch size is 8, we will have 8 columns.
 We will set the no. of rows in the stack to 4. Pytorch will parallelize this process and *that's what makes transformers so good. The power of efficiency.*
 
 **Extracting Batches**
-The function `get_batch` will be used to either extract 4 blocks of size 8 and put them onto a stack togther. 2 [4x8] stacks will be returned. One being the context and the other being the target. 
+The function `get_batch` will be used to either extract 4 blocks of size 8 and put them onto a stack togther. 2 [4x8] stacks will be returned. One being the context and the other being the target.
 """
 
 BATCH_SIZE = 4
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 torch.manual_seed(1337)
 
-# get_batch will extract from either training or testing depending 
+# get_batch will extract from either training or testing depending
 # on the value of the split_type ('train' or 'test')
 def get_batch(split_type):
   data = training_data if split_type == "train" else testing_data
 
-  # ix essentially says: find $batch_size (4) random offsets and then 
+  # ix essentially says: find $batch_size (4) random offsets and then
   # extract $block_size (8) length list after and including it.
   ix = torch.randint((len(data) - BLOCK_SIZE), (BATCH_SIZE, ))
 
@@ -118,7 +118,7 @@ def get_batch(split_type):
   x, y = cx.to(DEVICE), tg.to(DEVICE)
   return x,y
 
-# Sampling the 
+# Sampling the
 xd, yd = get_batch('train')
 
 print(xd.shape)
@@ -137,17 +137,17 @@ for batch in range(BATCH_SIZE):
 EVAL_ITERS = 200
 
 @torch.no_grad()
-def estimate_loss():
+def estimate_loss(model_est):
     out = {}
-    model.eval()
+    model_est.eval()
     for split in ['train', 'val']:
         losses = torch.zeros(EVAL_ITERS)
         for k in range(EVAL_ITERS):
             X, Y = get_batch(split)
-            logits, loss = model(X, Y)
+            logits, loss = model_est(X, Y)
             losses[k] = loss.item()
         out[split] = losses.mean()
-    model.train()
+    model_est.train()
     return out
 
 """## Bigram Language Model
@@ -158,54 +158,42 @@ The simplest language model you can find. It literally just does word prediction
 N_EMBED = 32
 class BigramLanguageModel(nn.Module):
 
-  def __init__(self):
-      super().__init__()
-      # each token reads of the logits for the next token in the lookup table
-      self.token_embedding_table = nn.Embedding(VOCAB_SIZE, N_EMBED)
-      self.pos_embedding_table = nn.Embedding(BLOCK_SIZE, N_EMBED)
-      self.lm_head = nn.Linear(N_EMBED, VOCAB_SIZE)
+    def __init__(self, vocab_size):
+        super().__init__()
+        # each token directly reads off the logits for the next token from a lookup table
+        self.token_embedding_table = nn.Embedding(vocab_size, vocab_size)
 
-  def forward(self, idx, targets=None):
-    B, T = idx.shape
+    def forward(self, idx, targets=None):
 
-    # idx is the contexts that will be passed into the embedding table 
-    # which retunrns a (Batch, Time, Channel) logit sequence
-    token_embs = self.token_embedding_table(idx) # (B, T, C)
-    pos_embs = self.pos_embedding_table(torch.arange(T, device=DEVICE))
-    
-    x = token_embs + pos_embs
-    logits = self.lm_head(x) # (B, T, VOCAB_SIZE)
+        # idx and targets are both (B,T) tensor of integers
+        logits = self.token_embedding_table(idx) # (B,T,C)
 
-    if targets is None:
-      loss = None
-    else:
-      B,T,C = logits.shape
-      logits = logits.view(B*T, C)
-      targets = targets.view(B*T)
-      # We need to model the loss function as the difference (cross_entropy)
-      # between the produced output and the target output
-      loss = F.cross_entropy(logits, targets)
-    return logits, loss
+        if targets is None:
+            loss = None
+        else:
+            B, T, C = logits.shape
+            logits = logits.view(B*T, C)
+            targets = targets.view(B*T)
+            loss = F.cross_entropy(logits, targets)
 
-      
-  def generate(self, idx, max_new_tokens):
-    # idx is (B, T) array of indices in the current context
-    for _ in range(max_new_tokens):
-        # get the predictions
-        logits, loss = self(idx)
-        # focus only on the last time step
-        logits = logits[:, -1, :] # becomes (B, C)
-        # apply softmax to get probabilities
-        probs = F.softmax(logits, dim=-1) # (B, C)
-        # sample from the distribution
-        idx_next = torch.multinomial(probs, num_samples=1) # (B, 1)
-        # append sampled index to the running sequence
-        idx = torch.cat((idx, idx_next), dim=1) # (B, T+1)
-    return idx
+        return logits, loss
 
+    def generate(self, idx, max_new_tokens):
+        # idx is (B, T) array of indices in the current context
+        for _ in range(max_new_tokens):
+            # get the predictions
+            logits, loss = self(idx)
+            # focus only on the last time step
+            logits = logits[:, -1, :] # becomes (B, C)
+            # apply softmax to get probabilities
+            probs = F.softmax(logits, dim=-1) # (B, C)
+            # sample from the distribution
+            idx_next = torch.multinomial(probs, num_samples=1) # (B, 1)
+            # append sampled index to the running sequence
+            idx = torch.cat((idx, idx_next), dim=1) # (B, T+1)
+        return idx
 
-
-model = BigramLanguageModel()
+model = BigramLanguageModel(VOCAB_SIZE)
 m = model.to(DEVICE)
 logits, loss = m(xd, yd)
 print(logits.shape)
@@ -215,12 +203,11 @@ print(loss)
 
 idx = torch.zeros((BLOCK_SIZE,BATCH_SIZE), dtype = torch.long)
 print(idx)
-sequence_gen = m.generate(idx, max_new_tokens=100)[0].tolist()
-print(decode(sequence_gen))
+print(decode(m.generate(idx = torch.zeros((1, 1), dtype=torch.long), max_new_tokens=500)[0].tolist()))
 
-"""## Optimization 
+"""## Optimization
 
-We can now start training the model and prompting it to minimizing the loss function. We will use the AdamW optimzer from PyTorch. The learning rate ca be set to much higher for 
+We can now start training the model and prompting it to minimizing the loss function. We will use the AdamW optimzer from PyTorch. The learning rate ca be set to much higher for
 """
 
 # create an optimizer
@@ -234,7 +221,7 @@ for iter in range(MAX_ITERS):
 
     # every once in a while evaluate the loss on train and val sets
     if iter % EVAL_INTERVAL == 0:
-        losses = estimate_loss()
+        losses = estimate_loss(model)
         print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
 
     # sample a batch of data
@@ -260,7 +247,7 @@ print(decode(sequence_gen))
 
 Now we want the batches to talk to each other. So if I am at batch i, i want to gain context and loss information of the predications of **all the previous batches** because I am trying to improve the predictions for this one.
 
-I **cannot look at all the predictions in the future batches** because I want to predict the future. 
+I **cannot look at all the predictions in the future batches** because I want to predict the future.
 """
 
 torch.manual_seed(1337)
@@ -277,8 +264,8 @@ weights = weights / weights.sum(1, keepdim=True)
 print(weights)
 
 # This is valid matrix multiplication becasue PyTorch will automatically convert
-# the weights (T x T) matrix to a (B x T x T) so it can multiply with a 
-# (B x T x C) matrix 
+# the weights (T x T) matrix to a (B x T x T) so it can multiply with a
+# (B x T x C) matrix
 xbow_2 = weights @ x
 print(xbow_2[0])
 
@@ -286,8 +273,8 @@ tril = torch.tril(torch.ones(T,T))
 weights = torch.zeros(T, T)
 
 # This essentially says that token in the future cannot communicate with a token
-# in the past. We can't have a future token interacting with the past for the 
-# reasons mentioned before. 
+# in the past. We can't have a future token interacting with the past for the
+# reasons mentioned before.
 weights = weights.masked_fill(tril==0, float('-inf'))
 weights = F.softmax(weights, dim=-1)
 
@@ -295,9 +282,9 @@ print(weights)
 xbow3 = weights @ x
 print(xbow3)
 
-"""## Self-Attention 
+"""## Self-Attention
 
-The value v stores "here's what I will communicate to you if there is a key that satsifies my query" for a single head. 
+The value v stores "here's what I will communicate to you if there is a key that satsifies my query" for a single head.
 """
 
 # version 4: self-attention!
@@ -326,12 +313,12 @@ tril
 
 weights[0]
 
-"""Look at the 0.2391 in the last row of the above matrix. It is the 8th token. It knows its position via the position embedding table and the its value. Then it makes a query - like im looking for <> characters. 
-Every node gets to emit a key and the query and key that dot product the highest indicate that they match well. 
+"""Look at the 0.2391 in the last row of the above matrix. It is the 8th token. It knows its position via the position embedding table and the its value. Then it makes a query - like im looking for <> characters.
+Every node gets to emit a key and the query and key that dot product the highest indicate that they match well.
 """
 
 class Head(nn.Module):
-  
+
   def __init__(self, head_size):
     super().__init__()
     self.query = nn.Linear(N_EMBED, head_size, bias=False)
@@ -340,19 +327,104 @@ class Head(nn.Module):
     self.register_buffer('tril', torch.tril(torch.ones(BLOCK_SIZE, BLOCK_SIZE)))
 
   def forward(self, x):
-   B,T,C = x.shape
-   k = self.key(x)
-   q = self.query(x)
-   v = self.value(x)
-   # compute attention scores ("affinities")
+    B,T,C = x.shape
+    k = self.key(x)
+    q = self.query(x)
+    v = self.value(x)
+    # compute attention scores ("affinities")
 
-   # this is in accordance with what is done in the original transformers paper
-   # the diision by the square root serves to amplify the maximum.
-   wei = q @ k.transpose(-2,-1) * C**-0.5 # (B, T, C) @ (B, C, T) -> (B, T, T)
-   wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf')) # (B, T, T)
-   wei = F.softmax(wei, dim=-1) # (B, T, T)
-   wei = self.dropout(wei)
+    # this is in accordance with what is done in the original transformers paper
+    # the diision by the square root serves to amplify the maximum.
+    wei = q @ k.transpose(-2,-1) * C**-0.5 # (B, T, C) @ (B, C, T) -> (B, T, T)
+    wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf')) # (B, T, T)
+    wei = F.softmax(wei, dim=-1) # (B, T, T)
 
-   out = wei @ v
-   return out
+    out = wei @ v
+    return out
+
+
+class MultiAttentionHead(nn.Module):
+
+    def __init__(self, num_heads, head_size):
+        super().__init__()
+        self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
+
+    def forward(self, x):
+        return torch.cat([h(x) for h in self.heads], dim=-1)
+
+
+class FeedForward(nn.Module):
+    """ a simple mutlilayer perceptron"""
+
+    def __init__(self, n_embd):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(n_embd, n_embd),
+            nn.ReLU(),
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+
+'''
+Bigram Model with Self attention head
+'''
+class SABigramLanguageModel(nn.Module):
+
+    def __init__(self):
+        super().__init__()
+        self.token_embedding_table = nn.Embedding(VOCAB_SIZE, N_EMBED)
+        self.position_embedding_table = nn.Embedding(BLOCK_SIZE, N_EMBED)
+        self.sa_heads = MultiAttentionHead(4, N_EMBED//4) # 4 heads of 8-dimensional heads
+        self.ffd = FeedForward(N_EMBED)
+        self.lm_head = nn.Linear(N_EMBED, VOCAB_SIZE)
+
+    def forward(self, idx, targets=None):
+        B, T = idx.shape
+
+        tok_emb = self.token_embedding_table(idx)
+        pos_emb = self.position_embedding_table(torch.arange(T, device=DEVICE))
+        x = tok_emb + pos_emb
+        x = self.sa_heads(x)
+        x = self.ffd(x)
+        logits = self.lm_head(x)
+
+        if targets is None:
+            loss = None
+        else:
+            B, T, C = logits.shape
+            logits = logits.view(B*T, C)
+            targets = targets.view(B * T)
+            loss = F.cross_entropy(logits, targets)
+
+        return logits, loss
+
+    def generate(self, idx, max_new_tokens):
+        # idx is (B, T) array of indices in the current context
+        for _ in range(max_new_tokens):
+            # crop idx to the last block_size tokens
+            idx_cond = idx[:, -BLOCK_SIZE:]
+            # get the predictions
+            logits, loss = self(idx_cond)
+            # focus only on the last time step
+            logits = logits[:, -1, :] # becomes (B, C)
+            # apply softmax to get probabilities
+            probs = F.softmax(logits, dim=-1) # (B, C)
+            # sample from the distribution
+            idx_next = torch.multinomial(probs, num_samples=1) # (B, 1)
+            # append sampled index to the running sequence
+            idx = torch.cat((idx, idx_next), dim=1) # (B, T+1)
+        return idx
+
+xd, yd = get_batch('train')
+sa_model = SABigramLanguageModel()
+sa_m = sa_model.to(DEVICE)
+logits, loss = sa_m(xd, yd)
+print(logits.shape)
+print(loss)
+
+"""Define the same optimizer again
+
+"""
 
