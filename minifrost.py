@@ -428,3 +428,39 @@ print(loss)
 
 """
 
+sa_optimizer = torch.optim.AdamW(sa_model.parameters(), lr=1e-3)
+
+@torch.no_grad()
+def sa_estimate_loss():
+    out = {}
+    sa_model.eval()
+    for split in ['train', 'val']:
+        losses = torch.zeros(EVAL_ITERS)
+        for k in range(EVAL_ITERS):
+            X, Y = get_batch(split)
+            logits, loss = sa_model(X, Y)
+            losses[k] = loss.item()
+        out[split] = losses.mean()
+    sa_model.train()
+    return out
+
+MAX_ITERS_SA = 5100
+for iter in range(MAX_ITERS_SA):
+
+    # every once in a while evaluate the loss on train and val sets
+    if iter % EVAL_INTERVAL == 0 or iter == MAX_ITERS_SA - 1:
+        losses = sa_estimate_loss()
+        print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+
+    # sample a batch of data
+    xb, yb = get_batch('train')
+
+    # evaluate the loss
+    logits, loss = sa_model(xb, yb)
+    sa_optimizer.zero_grad(set_to_none=True)
+    loss.backward()
+    sa_optimizer.step()
+
+# generate from the model
+context = torch.zeros((1, 1), dtype=torch.long, device=DEVICE)
+print(decode(sa_m.generate(context, max_new_tokens=500)[0].tolist()))
