@@ -81,7 +81,7 @@ Now for a transformer, we need to chunk data in batches and feed it in with a co
 This is how the model learns. It sees all the context for that batch and sees all the targets and accordingly learns to predict. 
 """
 
-BLOCK_SIZE = 8
+BLOCK_SIZE = 256
 
 # An example here shows the context and target in actions 
 context = training_data[:BLOCK_SIZE]
@@ -98,7 +98,7 @@ We will set the no. of rows in the stack to 4. Pytorch will parallelize this pro
 The function `get_batch` will be used to either extract 4 blocks of size 8 and put them onto a stack togther. 2 [4x8] stacks will be returned. One being the context and the other being the target. 
 """
 
-BATCH_SIZE = 4
+BATCH_SIZE = 64
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 torch.manual_seed(1337)
 
@@ -154,7 +154,7 @@ def estimate_loss(model_est):
 The simplest language model you can find. It literally just does word prediction based on the last word. Read more about n-gram models [here](https://towardsdatascience.com/introduction-to-language-models-n-gram-e323081503d9)
 """
 
-N_EMBED = 32
+N_EMBED = 384
 class BigramLanguageModel(nn.Module):
 
     def __init__(self, vocab_size):
@@ -210,12 +210,14 @@ We can now start training the model and prompting it to minimizing the loss func
 """
 
 # create an optimizer
-optimizer = torch.optim.AdamW(m.parameters(), lr=1e-3)
+LEARNING_RATE=3e-4
+
+optimizer = torch.optim.AdamW(m.parameters(), lr=LEARNING_RATE)
 
 """Now in batches we can train the model to reduce the loss. """
 
 MAX_ITERS = 3000
-EVAL_INTERVAL = 300
+EVAL_INTERVAL = 100
 for iter in range(MAX_ITERS):
 
     # every once in a while evaluate the loss on train and val sets
@@ -313,106 +315,151 @@ tril
 weights[0]
 
 """Look at the 0.2391 in the last row of the above matrix. It is the 8th token. It knows its position via the position embedding table and the its value. Then it makes a query - like im looking for <> characters. 
-Every node gets to emit a key and the query and key that dot product the highest indicate that they match well. 
+Every node gets to emit a key and the query and key that dot product the highest indicate that they match well.
+
+# Final Build 
+
+This build accounts for the Multiple Heads of Attention, Residual Connections and the LayerNorm but applied before the FeedForward step.
 """
 
-class Head(nn.Module):
+N_HEAD = 6
+N_LAYER = 6
+DROPOUT = 0.2
+
+class LayerNorm1d: # (used to be BatchNorm1d)
   
-  def __init__(self, head_size):
-    super().__init__()
-    self.query = nn.Linear(N_EMBED, head_size, bias=False)
-    self.key = nn.Linear(N_EMBED, head_size, bias=False)
-    self.value = nn.Linear(N_EMBED, head_size, bias=False)
-    self.register_buffer('tril', torch.tril(torch.ones(BLOCK_SIZE, BLOCK_SIZE)))
-
-  def forward(self, x):
-    B,T,C = x.shape
-    k = self.key(x)
-    q = self.query(x)
-    v = self.value(x)
-    # compute attention scores ("affinities")
-
-    # this is in accordance with what is done in the original transformers paper
-    # the diision by the square root serves to amplify the maximum.
-    wei = q @ k.transpose(-2,-1) * C**-0.5 # (B, T, C) @ (B, C, T) -> (B, T, T)
-    wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf')) # (B, T, T)
-    wei = F.softmax(wei, dim=-1) # (B, T, T)
-
-    out = wei @ v
-    return out
+  def __init__(self, dim, eps=1e-5, momentum=0.1):
+    self.eps = eps
+    self.gamma = torch.ones(dim)
+    self.beta = torch.zeros(dim)
+  
+  def __call__(self, x):
+    # calculate the forward pass
+    xmean = x.mean(1, keepdim=True) # batch mean
+    xvar = x.var(1, keepdim=True) # batch variance
+    xhat = (x - xmean) / torch.sqrt(xvar + self.eps) # normalize to unit variance
+    self.out = self.gamma * xhat + self.beta
+    return self.out
+  
+  def parameters(self):
+    return [self.gamma, self.beta]
 
 
-class MultiAttentionHead(nn.Module):
+class Head(nn.Module):
+    """ one head of self-attention """
+
+    def __init__(self, head_size):
+        super().__init__()
+        self.key = nn.Linear(N_EMBED, head_size, bias=False)
+        self.query = nn.Linear(N_EMBED, head_size, bias=False)
+        self.value = nn.Linear(N_EMBED, head_size, bias=False)
+        self.register_buffer('tril', torch.tril(torch.ones(BLOCK_SIZE, BLOCK_SIZE)))
+
+        # self.dropout = nn.Dropout(DROPOUT)
+
+    def forward(self, x):
+        # input of size (batch, time-step, channels)
+        # output of size (batch, time-step, head size)
+        B,T,C = x.shape
+        k = self.key(x)   # (B,T,hs)
+        q = self.query(x) # (B,T,hs)
+        # compute attention scores ("affinities")
+        wei = q @ k.transpose(-2,-1) * k.shape[-1]**-0.5 # (B, T, hs) @ (B, hs, T) -> (B, T, T)
+        wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf')) # (B, T, T)
+        wei = F.softmax(wei, dim=-1) # (B, T, T)
+        # wei = self.dropout(wei)
+        # perform the weighted aggregation of the values
+        v = self.value(x) # (B,T,hs)
+        out = wei @ v # (B, T, T) @ (B, T, hs) -> (B, T, hs)
+        return out
+
+class MultiHeadAttention(nn.Module):
+    """ multiple heads of self-attention in parallel """
 
     def __init__(self, num_heads, head_size):
         super().__init__()
         self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
-    
+        self.proj = nn.Linear(head_size * num_heads, N_EMBED)
+        # self.dropout = nn.Dropout(DROPOUT)
+
     def forward(self, x):
-        return torch.cat([h(x) for h in self.heads], dim=-1)
+        out = torch.cat([h(x) for h in self.heads], dim=-1)
+        out = self.proj(out)
+        return out
 
-
-class FeedForward(nn.Module):
-    """ a simple mutlilayer perceptron"""
+class FeedFoward(nn.Module):
+    """ a simple linear layer followed by a non-linearity """
 
     def __init__(self, n_embd):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(n_embd, n_embd),
+            nn.Linear(n_embd, 4 * n_embd),
             nn.ReLU(),
+            nn.Linear(4 * n_embd, n_embd),
         )
 
     def forward(self, x):
         return self.net(x)
 
 class Block(nn.Module):
+    """ Transformer block: communication followed by computation """
 
     def __init__(self, n_embd, n_head):
+        # n_embd: embedding dimension, n_head: the number of heads we'd like
         super().__init__()
         head_size = n_embd // n_head
-        self.sa = MultiAttentionHead(n_head, head_size)
-        self.ffwd = FeedForward(n_embd)
-
+        self.sa = MultiHeadAttention(n_head, head_size)
+        self.ffwd = FeedFoward(n_embd)
+        self.ln1 = nn.LayerNorm(n_embd)
+        self.ln2 = nn.LayerNorm(n_embd)
 
     def forward(self, x):
-        x = self.sa(x)
-        x = self.ffwd(x)
+        x = x + self.sa(self.ln1(x))
+        x = x + self.ffwd(self.ln2(x))
         return x
-'''
-Bigram Model with Self attention head
-'''
-class SABigramLanguageModel(nn.Module):
+
+class GPTLanguageModel(nn.Module):
 
     def __init__(self):
         super().__init__()
+        # each token directly reads off the logits for the next token from a lookup table
         self.token_embedding_table = nn.Embedding(VOCAB_SIZE, N_EMBED)
         self.position_embedding_table = nn.Embedding(BLOCK_SIZE, N_EMBED)
-        self.blocks = nn.Sequential(
-            Block(N_EMBED, n_head=4),
-            Block(N_EMBED, n_head=4),
-            Block(N_EMBED, n_head=4),
-        )
+        self.blocks = nn.Sequential(*[Block(N_EMBED, n_head=N_HEAD) for _ in range(N_LAYER)])
+        self.ln_f = nn.LayerNorm(N_EMBED) # final layer norm
         self.lm_head = nn.Linear(N_EMBED, VOCAB_SIZE)
+
+        # better init, not covered in the original GPT video, but important, will cover in followup video
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def forward(self, idx, targets=None):
         B, T = idx.shape
 
-        tok_emb = self.token_embedding_table(idx)
-        pos_emb = self.position_embedding_table(torch.arange(T, device=DEVICE))
-        x = tok_emb + pos_emb
-        x = self.sa_heads(x)
-        x = self.ffd(x) 
-        logits = self.lm_head(x)
+        # idx and targets are both (B,T) tensor of integers
+        tok_emb = self.token_embedding_table(idx) # (B,T,C)
+        pos_emb = self.position_embedding_table(torch.arange(T, device=DEVICE)) # (T,C)
+        x = tok_emb + pos_emb # (B,T,C)
+        x = self.blocks(x) # (B,T,C)
+        x = self.ln_f(x) # (B,T,C)
+        logits = self.lm_head(x) # (B,T,vocab_size)
 
         if targets is None:
             loss = None
         else:
             B, T, C = logits.shape
             logits = logits.view(B*T, C)
-            targets = targets.view(B * T)
+            targets = targets.view(B*T)
             loss = F.cross_entropy(logits, targets)
 
-        return logits, loss  
+        return logits, loss
 
     def generate(self, idx, max_new_tokens):
         # idx is (B, T) array of indices in the current context
@@ -432,7 +479,7 @@ class SABigramLanguageModel(nn.Module):
         return idx
 
 xd, yd = get_batch('train')
-sa_model = SABigramLanguageModel()
+sa_model = GPTLanguageModel()
 sa_m = sa_model.to(DEVICE)
 logits, loss = sa_m(xd, yd)
 print(logits.shape)
@@ -442,7 +489,7 @@ print(loss)
 
 """
 
-sa_optimizer = torch.optim.AdamW(sa_model.parameters(), lr=1e-3)
+sa_optimizer = torch.optim.AdamW(sa_model.parameters(), lr=LEARNING_RATE)
 
 @torch.no_grad()
 def sa_estimate_loss():
